@@ -1,9 +1,7 @@
 import customtkinter as ctk
-import tkinter as tk
-import timeit
+import time
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor
-from multiprocessing import Pool, Value
+from multiprocessing import Pool, Manager
 import os
 from datetime import datetime
 import utils
@@ -16,10 +14,12 @@ direction=(0,0)
 center_score=[]
 n=0
 history_moves=[]
+undo=(0,0)
+a=0
 #algorithm
-k=0
 def init():
-    global real_state,center_score
+    global real_state,center_score,a
+    a=0
     real_state=np.zeros((n,n),dtype=int)
     center=n//2
     center_score =np.zeros((n,n),dtype=int) 
@@ -181,7 +181,6 @@ def score_state(state,center_score):
     return score
 
 def count_chain(state,length):
-    k=0
     n=len(state[0])
     chains = {1:[],-1:[]}
     # index 0:count, index 1: current_value, index 3: length, index 4:first time
@@ -275,9 +274,7 @@ def is_full(state):
             return False
     return True
 
-def minimax(state,center_score,depth,move,alpha,beta,player):
-
-    global k
+def minimax(state,center_score,depth,move,alpha,beta,player,q):
     winner_player=winner(state,move,player*-1,True)
     if winner_player==1: return 10000
     if winner_player==-1: return -10000
@@ -285,21 +282,24 @@ def minimax(state,center_score,depth,move,alpha,beta,player):
         return evaluate_heuristic(state,center_score,player*1)
     reverse=True if player==1 else False
     moves = available_move(state)
-    # print(len(moves))
     moves = sorted(moves, key=lambda m: evaluate_heuristic(make_move(state, m, player),center_score,player), reverse=reverse)
     if(player==1):
         for i in moves:
             new_state=make_move(state,i,1)
-            value=minimax(new_state,center_score,depth-1,i,alpha,beta,-1)
+            value=minimax(new_state,center_score,depth-1,i,alpha,beta,-1,q)
             alpha=max(alpha,value)
-            if(alpha>=beta): break
+            if(alpha>=beta):
+                q.put(1)
+                break
         return alpha
     elif(player==-1):
         for i in moves:
             new_state=make_move(state,i,-1)
-            value=minimax(new_state,center_score,depth-1,i,alpha,beta,1)
+            value=minimax(new_state,center_score,depth-1,i,alpha,beta,1,q)
             beta=min(beta,value)
-            if(alpha>=beta): break
+            if(alpha>=beta):
+                q.put(1)
+                break
         return beta
 
 def process_score(move,state,center_score,player):
@@ -311,49 +311,52 @@ def best_move():
     best_move=None
     moves = available_move(real_state)
     s=len(real_state)
-    quantity=s*s- len(moves)
-    if(quantity<=25):
-        print('single')
+    quantity=s*s- len(moves) #số nước đã đi trên bàn cờ
+    if(quantity<=35 and s!=9):
+        print('giai đoạn 1')
         moves = sorted(moves, key=lambda move: evaluate_heuristic(make_move(real_state, move, 1),center_score,1), reverse=True)
         best_move= moves[0]
     else:
+        cpu_count=1 
+        cpu_count=os.cpu_count() # comment để tắt multiprocessing
         inputs=[]
         for move in moves: 
             new_state=make_move(real_state, move, 1)
             inputs.append((move,new_state,center_score,1))
-        with Pool(os.cpu_count()) as pool:
+        with Pool(cpu_count) as pool:
             results = pool.starmap(process_score, inputs)
         moves=sorted(results,key=lambda x:x[1],reverse=True)
         x=len(moves)
-        if(x>80 or s==9):
-            print("process_1")
+        if(x>58 or s==9):
+            print(f"giai đoạn 2(worker processes={cpu_count})")
             best_move= moves[0][0]
         else:
-            if(x<30): depth=3
-            elif(x<50): depth=2
-            elif(x<=80): depth=1
-            print('process_2')
-            size=20
+            if(x<=58): depth=1
+            print(f'giai đoạn 3 (độ sâu={depth+1},worker processes={cpu_count})')
+            size=12
             start=0
-            n=len(real_state)
+            break_count=0
             while start< len(moves):
-                end=min(start+size,len(moves))
-                inputs=[]
-                for move,score in moves[start:end]:            
-                    new_state=make_move(real_state,move,1)
-                    inputs.append((new_state,center_score,depth,move,alpha,999999,-1))
-                if(not inputs): break 
-                with Pool(os.cpu_count()) as pool:
-                    results = pool.starmap(minimax, inputs)
-                print(results) # in kết quả
+                with Manager() as manager:
+                    q = manager.Queue()
+                    end=min(start+size,len(moves))
+                    inputs=[]
+                    for move,score in moves[start:end]:           
+                        new_state=make_move(real_state,move,1)
+                        inputs.append((new_state,center_score,depth,move,alpha,999999,-1,q))
+                    if(not inputs): break 
+                    with Pool(processes=cpu_count) as pool:
+                        results = pool.starmap(minimax, inputs)
+                    break_count=break_count+ q.qsize()
                 value=max(results)
                 if(value>alpha):
                     alpha=value
-                    best_move,score=moves[start + results.index(max(results))]
+                    best_move=moves[start + results.index(max(results))][0]
                 start=end
-                # count=9 if n== 9 else 6
-                count=1
+                count=7
                 size=size*count
+                
+            print(f'Số nhánh cắt: {break_count}')
     return best_move
   
 # UI
@@ -382,11 +385,12 @@ def on_friend_click():
     draw()
 
 def menu(save):
+    global history_moves
     for i in root.winfo_children():
         i.destroy()
-    if(save):
+    if(save and history_moves):
         utils.save_to_txt('./history',datetime.now().strftime("game_%Y-%m-%d_%H-%M-%S.txt"),board_size.get(),game_mode,history_moves)
-        save=False
+        history_moves=[]
     root.geometry(f'600x400+{(int)((screen_width-600)/2)}+{(int)((screen_height-400)/2)}')  
 
     title = ctk.CTkLabel(root, text="Game Mode",bg_color='white', font=('Consolas',19))
@@ -395,7 +399,7 @@ def menu(save):
     board_9=ctk.CTkRadioButton(root,text='9x9',bg_color='white',variable=board_size,value=9,font=('Consolas',15))
     board_15=ctk.CTkRadioButton(root,text='15x15',bg_color='white',variable=board_size,value=15,font=('Consolas',15))
     board_19=ctk.CTkRadioButton(root,text='19x19',bg_color='white',variable=board_size,value=19,font=('Consolas',15))
-    history_button=ctk.CTkButton(root,height=15,width=10, text="+", font=('Consolas',28),bg_color='white', fg_color="gray",hover_color="gray",  text_color="black", corner_radius=10, command=lambda:draw_menu_history())
+    history_button=ctk.CTkButton(root,height=15,width=10, text="+", font=('Consolas',28) ,bg_color='white', fg_color="gray",hover_color="gray",  text_color="black", corner_radius=10, command=lambda:draw_menu_history())
 
     title.place(relx=0.5, rely=0.2, anchor="center")
     ai_button.place(relx=0.5, rely=0.38, anchor="center")
@@ -421,9 +425,14 @@ def draw_menu_history():
     box.transient(root)
     box.title('History')
     box.geometry(f'600x400+{(screen_width-600)//2}+{(screen_height-400)//2}')
-    for file in os.listdir('./history'):
-        file_button = ctk.CTkButton(box, text=file,bg_color='white',  hover_color="gray", text_color="black", command=lambda file=file:draw_history(file,box))
-        file_button.pack(fill="both", expand=True, padx=20, pady=10)
+    files=os.listdir('./history')
+    i=-1
+    for file in files:
+        i+=1
+        row = i // 3
+        col = i % 3 
+        file_button = ctk.CTkButton(box, text=file,width=60,height=20,bg_color='white',  hover_color="gray", text_color="black", command=lambda file=file:draw_history(file,box))
+        file_button.grid(row=row, column=col, padx=2, pady=2)
 
 def action(history_board,game_history,action_number):
     if(action_number==2):
@@ -495,15 +504,25 @@ def show_message(message):
     box.geometry(f'250x130+{(screen_width//2)+100}+{(screen_height-130)//2}')
     box.grab_set()
     box.transient()
-    box.protocol("WM_DELETE_WINDOW", menu)
+    box.protocol("WM_DELETE_WINDOW", lambda:menu(True))
     message=ctk.CTkLabel(box,text=message,font=('Consolas',16))
     message.place(relx=0.5,rely=0.3,anchor='center')
     button=ctk.CTkButton(box,text='Menu',font=('Consolas',16),command=lambda :menu(True))
     button.place(relx=0.5,rely=0.65,anchor='center')
 
+def remove():
+    global real_state,history_moves
+    part=current_cell_tag.split(':')
+    real_state[int(part[0])][int(part[1])]=0
+    real_state[undo[0]][undo[1]]=0
+    t1='t'+current_cell_tag
+    t2=f't{undo[0]}:{undo[1]}'
+    board.itemconfig(board.find_withtag(t1),text='')
+    board.itemconfig(board.find_withtag(t2),text='')
+    history_moves.pop()
+    history_moves.pop()
 def onclick_cell(move): 
-    global real_state,current_cell_tag,turn,k
-    k=0
+    global real_state,current_cell_tag,turn,a,undo
     row,col=move
     player=-1 if turn=='x' else 1
     if(real_state[row][col]): return 
@@ -514,7 +533,10 @@ def onclick_cell(move):
     board.itemconfig(board.find_withtag(text_tag),fill='#6b6b6b',text=turn)
     board.itemconfig(board.find_withtag(current_cell_tag),fill='white')
     board.itemconfig(board.find_withtag(cell_tag),fill='#adadad')
+    a=a+1
     
+    if turn=='x' :undo=move
+
     if(winner(real_state,move,player,False)!=0):
         draw_chain()
         show_message(f'Winner: {turn.upper()}!')
@@ -526,11 +548,17 @@ def onclick_cell(move):
     turn='x' if(turn=='o') else 'o'
     turn_label.configure(text=f'Turn: {turn.upper()}')
     board.update_idletasks()
+
     if(game_mode=='AI' and turn=='o'):
+        print(f'----Nước {a+1}----')
+        start_time = time.time()  
         move_ai=best_move()
+        end_time = time.time()
+        print(f"Thời gian: {end_time - start_time:.4f} giây")
         onclick_cell(move_ai)
 
 def draw():
+    print('Bắt đầu')
     global board,turn_label,n
     n=board_size.get()
     init()
@@ -547,7 +575,9 @@ def draw():
     if(game_mode=='AI'):
         you_label=ctk.CTkLabel(right_frame,width=130,text='You: X',font=('Consolas',16),bg_color='white')
         you_label.place(relx=0.5,rely=0.3,anchor='center')
-    
+        remove_button=ctk.CTkButton(right_frame,width=130,text='Undo',font=('Consolas',16),bg_color='white',border_width=0.5,border_color='black',command=remove)
+        remove_button.place(relx=0.5,rely=0.7,anchor='center')
+
     quit_button=ctk.CTkButton(right_frame,width=130,text='Quit',font=('Consolas',16),bg_color='white',border_width=0.5,border_color='black',command=lambda: menu(True))
     quit_button.place(relx=0.5,rely=0.4,anchor='center')
     window_width=size+40+10+130
@@ -572,30 +602,9 @@ def draw_board(board):
             board.tag_bind(cell_tag,'<Button-1>',lambda e,move=(i,j): onclick_cell(move))
 
 # UI
-def t():
-    global n
-    n=9
-    init()
-    real_state[7][2]=-1
-    best_move()
-    # moves = available_move(real_state)
-    # moves = sorted(moves, key=lambda move: evaluate_heuristic(make_move(real_state, move, 1),center_score), reverse=True)
-    # print(moves[80])
 
-import utils 
-d=98
-def j():
-    global n
-    n=10
-    init()
-    print(f':ppp:{score_direction(utils.read_board(),6,2,(1,1),1,(min(4,6,2),min(4,9-1-6,9-1-2)))}')
-def g():
-    print(timeit.timeit(t,number=1))
 if __name__ == "__main__":
-    # t()
-
     menu(False)
     root.mainloop()
-    # j()
 
 
