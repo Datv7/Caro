@@ -320,7 +320,9 @@ def best_move():
     else:
         cpu_count=1 
         cpu_count=os.cpu_count() # comment để tắt multiprocessing
-        if x<40: depth=3 # tăng cấp trận ảo khi lượng x ít
+        if x<30: 
+            print('giai đoạn 3')
+            return moves[0] # minimax không còn tác dụng
         elif x<60:depth=2 # tăng cấp trận ảo khi lượng x ít
         else: depth=1
         print(f'giai đoạn 2 (độ sâu={depth+1},worker processes={cpu_count})')
