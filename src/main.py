@@ -311,52 +311,43 @@ def best_move():
     best_move=None
     moves = available_move(real_state)
     s=len(real_state)
-    quantity=s*s- len(moves) #số nước đã đi trên bàn cờ
-    if(quantity<=35 and s!=9):
+    x=len(moves) #số nước có thể đi trên bàn cờ
+    moves = sorted(moves, key=lambda move: evaluate_heuristic(make_move(real_state, move, 1),center_score,1), reverse=True)
+    if x>100: 
         print('giai đoạn 1')
-        moves = sorted(moves, key=lambda move: evaluate_heuristic(make_move(real_state, move, 1),center_score,1), reverse=True)
         best_move= moves[0]
+
     else:
         cpu_count=1 
         cpu_count=os.cpu_count() # comment để tắt multiprocessing
-        inputs=[]
-        for move in moves: 
-            new_state=make_move(real_state, move, 1)
-            inputs.append((move,new_state,center_score,1))
-        with Pool(cpu_count) as pool:
-            results = pool.starmap(process_score, inputs)
-        moves=sorted(results,key=lambda x:x[1],reverse=True)
-        x=len(moves)
-        if(x>58 or s==9):
-            print(f"giai đoạn 2(worker processes={cpu_count})")
-            best_move= moves[0][0]
-        else:
-            if(x<=58): depth=1
-            print(f'giai đoạn 3 (độ sâu={depth+1},worker processes={cpu_count})')
-            size=12
-            start=0
-            break_count=0
-            while start< len(moves):
-                with Manager() as manager:
-                    q = manager.Queue()
-                    end=min(start+size,len(moves))
-                    inputs=[]
-                    for move,score in moves[start:end]:           
-                        new_state=make_move(real_state,move,1)
-                        inputs.append((new_state,center_score,depth,move,alpha,999999,-1,q))
-                    if(not inputs): break 
-                    with Pool(processes=cpu_count) as pool:
-                        results = pool.starmap(minimax, inputs)
-                    break_count=break_count+ q.qsize()
-                value=max(results)
-                if(value>alpha):
-                    alpha=value
-                    best_move=moves[start + results.index(max(results))][0]
-                start=end
-                count=7
-                size=size*count
-                
-            print(f'Số nhánh cắt: {break_count}')
+        if x<40: depth=3 # tăng cấp trận ảo khi lượng x ít
+        elif x<60:depth=2 # tăng cấp trận ảo khi lượng x ít
+        else: depth=1
+        print(f'giai đoạn 2 (độ sâu={depth+1},worker processes={cpu_count})')
+        size=12
+        start=0
+        break_count=0
+        while start< len(moves):
+            with Manager() as manager:
+                q = manager.Queue()
+                end=min(start+size,len(moves))
+                inputs=[]
+                for move in moves[start:end]:           
+                    new_state=make_move(real_state,move,1)
+                    inputs.append((new_state,center_score,depth,move,alpha,999999,-1,q))
+                if(not inputs): break 
+                with Pool(processes=cpu_count) as pool:
+                    results = pool.starmap(minimax, inputs)
+                break_count=break_count+ q.qsize()
+            value=max(results)
+            if(value>alpha):
+                alpha=value
+                best_move=moves[start + results.index(max(results))]
+            start=end
+            count=7
+            size=size*count
+            
+        print(f'Số nhánh cắt: {break_count}')
     return best_move
   
 # UI
